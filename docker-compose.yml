@@ -1,0 +1,403 @@
+version: '3.8'
+
+# ============================================================
+# BUS TICKET SYSTEM - INFRASTRUCTURE DOCKER COMPOSE
+# ============================================================
+# Services:
+#   - PostgreSQL (x7 databases - one per microservice)
+#   - Redis (cache + seat locking)
+#   - Zookeeper (Kafka coordinator)
+#   - Kafka (message broker)
+#   - Kafka UI (monitoring)
+#   - Redis Insight (monitoring)
+# ============================================================
+
+networks:
+  bus-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  postgres_auth_data:
+  postgres_route_data:
+  postgres_vehicle_data:
+  postgres_trip_data:
+  postgres_booking_data:
+  postgres_payment_data:
+  postgres_notification_data:
+  redis_data:
+  zookeeper_data:
+  zookeeper_log:
+  kafka_data:
+
+services:
+
+  # ============================================================
+  # ZOOKEEPER
+  # Port 2181: client connections
+  # ============================================================
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: bus-zookeeper
+    restart: unless-stopped
+    networks:
+      - bus-network
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_INIT_LIMIT: 5
+      ZOOKEEPER_SYNC_LIMIT: 2
+      ZOOKEEPER_MAX_CLIENT_CNXNS: 60
+      ZOOKEEPER_AUTOPURGE_SNAP_RETAIN_COUNT: 3
+      ZOOKEEPER_AUTOPURGE_PURGE_INTERVAL: 24
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_log:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | timeout 2 bash -c 'cat < /dev/null > /dev/tcp/localhost/2181' && echo imok || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ============================================================
+  # KAFKA
+  # Port 9092:  External access từ host machine
+  # Port 29092: Internal access giữa các container
+  # ============================================================
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: bus-kafka
+    restart: unless-stopped
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    networks:
+      - bus-network
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms256m"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:29092"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # ============================================================
+  # KAFKA UI
+  # Port 8090: http://localhost:8090
+  # ============================================================
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: bus-kafka-ui
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - bus-network
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: bus-ticket-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+      DYNAMIC_CONFIG_ENABLED: 'true'
+      AUTH_TYPE: "DISABLED"
+
+  # ============================================================
+  # REDIS
+  # Port 6379
+  # Dùng cho: Seat Locking, JWT Blacklist, Cache, Rate Limiting
+  # ============================================================
+  redis:
+    image: redis:7.2-alpine
+    container_name: bus-redis
+    restart: unless-stopped
+    networks:
+      - bus-network
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD:-redis_secret_2024}
+      --loglevel notice
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_secret_2024}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ============================================================
+  # REDIS INSIGHT
+  # Port 5540: http://localhost:5540
+  # ============================================================
+  redis-insight:
+    image: redislabs/redisinsight:latest
+    container_name: bus-redis-insight
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - bus-network
+    ports:
+      - "5540:5540"
+
+  # ============================================================
+  # POSTGRESQL - AUTH SERVICE
+  # Port 5433 → 5432 | DB: auth_db
+  # Tables: users, roles, refresh_tokens
+  # ============================================================
+  postgres-auth:
+    image: postgres:16-alpine
+    container_name: bus-postgres-auth
+    restart: unless-stopped
+    networks:
+      - bus-network
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: auth_db
+      POSTGRES_USER: auth_user
+      POSTGRES_PASSWORD: ${AUTH_DB_PASSWORD:-auth_pass_2024}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_auth_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/auth/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auth_user -d auth_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ============================================================
+  # POSTGRESQL - ROUTE SERVICE
+  # Port 5434 → 5432 | DB: route_db
+  # Tables: routes, stops, route_stops
+  # ============================================================
+  postgres-route:
+    image: postgres:16-alpine
+    container_name: bus-postgres-route
+    restart: unless-stopped
+    networks:
+      - bus-network
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_DB: route_db
+      POSTGRES_USER: route_user
+      POSTGRES_PASSWORD: ${ROUTE_DB_PASSWORD:-route_pass_2024}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_route_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/route/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U route_user -d route_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ============================================================
+  # POSTGRESQL - VEHICLE SERVICE
+  # Port 5435 → 5432 | DB: vehicle_db
+  # Tables: vehicles, seats, seat_layouts
+  # ============================================================
+  postgres-vehicle:
+    image: postgres:16-alpine
+    container_name: bus-postgres-vehicle
+    restart: unless-stopped
+    networks:
+      - bus-network
+    ports:
+      - "5435:5432"
+    environment:
+      POSTGRES_DB: vehicle_db
+      POSTGRES_USER: vehicle_user
+      POSTGRES_PASSWORD: ${VEHICLE_DB_PASSWORD:-vehicle_pass_2024}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_vehicle_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/vehicle/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vehicle_user -d vehicle_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ============================================================
+  # POSTGRESQL - TRIP SERVICE
+  # Port 5436 → 5432 | DB: trip_db
+  # Tables: trips, trip_seats
+  # ============================================================
+  postgres-trip:
+    image: postgres:16-alpine
+    container_name: bus-postgres-trip
+    restart: unless-stopped
+    networks:
+      - bus-network
+    ports:
+      - "5436:5432"
+    environment:
+      POSTGRES_DB: trip_db
+      POSTGRES_USER: trip_user
+      POSTGRES_PASSWORD: ${TRIP_DB_PASSWORD:-trip_pass_2024}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_trip_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/trip/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trip_user -d trip_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ============================================================
+  # POSTGRESQL - BOOKING SERVICE
+  # Port 5437 → 5432 | DB: booking_db
+  # Tables: bookings, tickets, seat_locks
+  # ============================================================
+  postgres-booking:
+    image: postgres:16-alpine
+    container_name: bus-postgres-booking
+    restart: unless-stopped
+    networks:
+      - bus-network
+    ports:
+      - "5437:5432"
+    environment:
+      POSTGRES_DB: booking_db
+      POSTGRES_USER: booking_user
+      POSTGRES_PASSWORD: ${BOOKING_DB_PASSWORD:-booking_pass_2024}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_booking_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/booking/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U booking_user -d booking_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ============================================================
+  # POSTGRESQL - PAYMENT SERVICE
+  # Port 5438 → 5432 | DB: payment_db
+  # Tables: payments, transactions, refunds
+  # ============================================================
+  postgres-payment:
+    image: postgres:16-alpine
+    container_name: bus-postgres-payment
+    restart: unless-stopped
+    networks:
+      - bus-network
+    ports:
+      - "5438:5432"
+    environment:
+      POSTGRES_DB: payment_db
+      POSTGRES_USER: payment_user
+      POSTGRES_PASSWORD: ${PAYMENT_DB_PASSWORD:-payment_pass_2024}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_payment_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/payment/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payment_user -d payment_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ============================================================
+  # POSTGRESQL - NOTIFICATION SERVICE
+  # Port 5439 → 5432 | DB: notification_db
+  # Tables: notifications, notification_templates, notification_logs
+  # ============================================================
+  postgres-notification:
+    image: postgres:16-alpine
+    container_name: bus-postgres-notification
+    restart: unless-stopped
+    networks:
+      - bus-network
+    ports:
+      - "5439:5432"
+    environment:
+      POSTGRES_DB: notification_db
+      POSTGRES_USER: notification_user
+      POSTGRES_PASSWORD: ${NOTIFICATION_DB_PASSWORD:-notif_pass_2024}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_notification_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/notification/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notification_user -d notification_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ============================================================
+  # KAFKA INIT - Tạo topics tự động khi khởi động
+  # ============================================================
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: bus-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - bus-network
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        echo 'Waiting for Kafka...'
+        sleep 5
+        echo 'Creating topics...'
+        kafka-topics --create --if-not-exists --bootstrap-server kafka:29092 --partitions 3 --replication-factor 1 --topic booking.created
+        kafka-topics --create --if-not-exists --bootstrap-server kafka:29092 --partitions 3 --replication-factor 1 --topic booking.cancelled
+        kafka-topics --create --if-not-exists --bootstrap-server kafka:29092 --partitions 3 --replication-factor 1 --topic booking.confirmed
+        kafka-topics --create --if-not-exists --bootstrap-server kafka:29092 --partitions 3 --replication-factor 1 --topic payment.success
+        kafka-topics --create --if-not-exists --bootstrap-server kafka:29092 --partitions 3 --replication-factor 1 --topic payment.failed
+        kafka-topics --create --if-not-exists --bootstrap-server kafka:29092 --partitions 3 --replication-factor 1 --topic payment.refunded
+        kafka-topics --create --if-not-exists --bootstrap-server kafka:29092 --partitions 3 --replication-factor 1 --topic ticket.issued
+        kafka-topics --create --if-not-exists --bootstrap-server kafka:29092 --partitions 3 --replication-factor 1 --topic ticket.checkin
+        kafka-topics --create --if-not-exists --bootstrap-server kafka:29092 --partitions 3 --replication-factor 1 --topic notification.send
+        kafka-topics --create --if-not-exists --bootstrap-server kafka:29092 --partitions 3 --replication-factor 1 --topic seat.released
+        echo 'Topics created!'
+        kafka-topics --list --bootstrap-server kafka:29092
+    restart: on-failure
