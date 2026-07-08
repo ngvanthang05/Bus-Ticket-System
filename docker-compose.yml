@@ -1,15 +1,9 @@
 version: '3.8'
 
 # ============================================================
-# BUS TICKET SYSTEM - INFRASTRUCTURE DOCKER COMPOSE
-# ============================================================
-# Services:
-#   - PostgreSQL (x7 databases - one per microservice)
-#   - Redis (cache + seat locking)
-#   - Zookeeper (Kafka coordinator)
-#   - Kafka (message broker)
-#   - Kafka UI (monitoring)
-#   - Redis Insight (monitoring)
+# XE KHACH - BUS TICKET SYSTEM - FULL DOCKER COMPOSE
+# Infra: Postgres x7, Redis, Kafka, Zookeeper, Kafka UI, Redis Insight, pgAdmin
+# Apps : API Gateway, Auth, Route, Vehicle, Trip, Booking, Payment, Notification
 # ============================================================
 
 networks:
@@ -31,12 +25,12 @@ volumes:
   zookeeper_data:
   zookeeper_log:
   kafka_data:
+  pgadmin_data:
 
 services:
 
   # ============================================================
   # ZOOKEEPER
-  # Port 2181: client connections
   # ============================================================
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
@@ -58,7 +52,7 @@ services:
       - zookeeper_data:/var/lib/zookeeper/data
       - zookeeper_log:/var/lib/zookeeper/log
     healthcheck:
-      test: ["CMD-SHELL", "echo ruok | timeout 2 bash -c 'cat < /dev/null > /dev/tcp/localhost/2181' && echo imok || exit 1"]
+      test: [ "CMD-SHELL", "echo ruok | timeout 2 bash -c 'cat < /dev/null > /dev/tcp/localhost/2181' && echo imok || exit 1" ]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -66,8 +60,6 @@ services:
 
   # ============================================================
   # KAFKA
-  # Port 9092:  External access từ host machine
-  # Port 29092: Internal access giữa các container
   # ============================================================
   kafka:
     image: confluentinc/cp-kafka:7.5.0
@@ -101,15 +93,14 @@ services:
     volumes:
       - kafka_data:/var/lib/kafka/data
     healthcheck:
-      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:29092"]
+      test: [ "CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:29092" ]
       interval: 15s
       timeout: 10s
       retries: 5
       start_period: 60s
 
   # ============================================================
-  # KAFKA UI
-  # Port 8090: http://localhost:8090
+  # KAFKA UI - http://localhost:8090
   # ============================================================
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
@@ -131,8 +122,6 @@ services:
 
   # ============================================================
   # REDIS
-  # Port 6379
-  # Dùng cho: Seat Locking, JWT Blacklist, Cache, Rate Limiting
   # ============================================================
   redis:
     image: redis:7.2-alpine
@@ -143,25 +132,18 @@ services:
     ports:
       - "6379:6379"
     command: >
-      redis-server
-      --appendonly yes
-      --appendfsync everysec
-      --maxmemory 256mb
-      --maxmemory-policy allkeys-lru
-      --requirepass ${REDIS_PASSWORD:-redis_secret_2024}
-      --loglevel notice
+      redis-server --appendonly yes --appendfsync everysec --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD:-redis_secret_2024} --loglevel notice
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_secret_2024}", "ping"]
+      test: [ "CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_secret_2024}", "ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 20s
 
   # ============================================================
-  # REDIS INSIGHT
-  # Port 5540: http://localhost:5540
+  # REDIS INSIGHT - http://localhost:5540
   # ============================================================
   redis-insight:
     image: redislabs/redisinsight:latest
@@ -176,9 +158,32 @@ services:
       - "5540:5540"
 
   # ============================================================
-  # POSTGRESQL - AUTH SERVICE
-  # Port 5433 → 5432 | DB: auth_db
-  # Tables: users, roles, refresh_tokens
+  # PGADMIN - http://localhost:5050
+  # ============================================================
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: bus-pgadmin
+    restart: unless-stopped
+    networks:
+      - bus-network
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@xekhach.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin123}
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - postgres-auth
+      - postgres-route
+      - postgres-vehicle
+      - postgres-trip
+      - postgres-booking
+      - postgres-payment
+      - postgres-notification
+
+  # ============================================================
+  # POSTGRESQL - AUTH SERVICE | Port 5433
   # ============================================================
   postgres-auth:
     image: postgres:16-alpine
@@ -197,16 +202,14 @@ services:
       - postgres_auth_data:/var/lib/postgresql/data
       - ./infrastructure/postgres/auth/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U auth_user -d auth_db"]
+      test: [ "CMD-SHELL", "pg_isready -U auth_user -d auth_db" ]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 30s
 
   # ============================================================
-  # POSTGRESQL - ROUTE SERVICE
-  # Port 5434 → 5432 | DB: route_db
-  # Tables: routes, stops, route_stops
+  # POSTGRESQL - ROUTE SERVICE | Port 5434
   # ============================================================
   postgres-route:
     image: postgres:16-alpine
@@ -225,16 +228,14 @@ services:
       - postgres_route_data:/var/lib/postgresql/data
       - ./infrastructure/postgres/route/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U route_user -d route_db"]
+      test: [ "CMD-SHELL", "pg_isready -U route_user -d route_db" ]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 30s
 
   # ============================================================
-  # POSTGRESQL - VEHICLE SERVICE
-  # Port 5435 → 5432 | DB: vehicle_db
-  # Tables: vehicles, seats, seat_layouts
+  # POSTGRESQL - VEHICLE SERVICE | Port 5435
   # ============================================================
   postgres-vehicle:
     image: postgres:16-alpine
@@ -253,16 +254,14 @@ services:
       - postgres_vehicle_data:/var/lib/postgresql/data
       - ./infrastructure/postgres/vehicle/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U vehicle_user -d vehicle_db"]
+      test: [ "CMD-SHELL", "pg_isready -U vehicle_user -d vehicle_db" ]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 30s
 
   # ============================================================
-  # POSTGRESQL - TRIP SERVICE
-  # Port 5436 → 5432 | DB: trip_db
-  # Tables: trips, trip_seats
+  # POSTGRESQL - TRIP SERVICE | Port 5436
   # ============================================================
   postgres-trip:
     image: postgres:16-alpine
@@ -281,16 +280,14 @@ services:
       - postgres_trip_data:/var/lib/postgresql/data
       - ./infrastructure/postgres/trip/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U trip_user -d trip_db"]
+      test: [ "CMD-SHELL", "pg_isready -U trip_user -d trip_db" ]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 30s
 
   # ============================================================
-  # POSTGRESQL - BOOKING SERVICE
-  # Port 5437 → 5432 | DB: booking_db
-  # Tables: bookings, tickets, seat_locks
+  # POSTGRESQL - BOOKING SERVICE | Port 5437
   # ============================================================
   postgres-booking:
     image: postgres:16-alpine
@@ -309,16 +306,14 @@ services:
       - postgres_booking_data:/var/lib/postgresql/data
       - ./infrastructure/postgres/booking/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U booking_user -d booking_db"]
+      test: [ "CMD-SHELL", "pg_isready -U booking_user -d booking_db" ]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 30s
 
   # ============================================================
-  # POSTGRESQL - PAYMENT SERVICE
-  # Port 5438 → 5432 | DB: payment_db
-  # Tables: payments, transactions, refunds
+  # POSTGRESQL - PAYMENT SERVICE | Port 5438
   # ============================================================
   postgres-payment:
     image: postgres:16-alpine
@@ -337,16 +332,14 @@ services:
       - postgres_payment_data:/var/lib/postgresql/data
       - ./infrastructure/postgres/payment/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U payment_user -d payment_db"]
+      test: [ "CMD-SHELL", "pg_isready -U payment_user -d payment_db" ]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 30s
 
   # ============================================================
-  # POSTGRESQL - NOTIFICATION SERVICE
-  # Port 5439 → 5432 | DB: notification_db
-  # Tables: notifications, notification_templates, notification_logs
+  # POSTGRESQL - NOTIFICATION SERVICE | Port 5439
   # ============================================================
   postgres-notification:
     image: postgres:16-alpine
@@ -365,14 +358,14 @@ services:
       - postgres_notification_data:/var/lib/postgresql/data
       - ./infrastructure/postgres/notification/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U notification_user -d notification_db"]
+      test: [ "CMD-SHELL", "pg_isready -U notification_user -d notification_db" ]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 30s
 
   # ============================================================
-  # KAFKA INIT - Tạo topics tự động khi khởi động
+  # KAFKA INIT - Tạo topics
   # ============================================================
   kafka-init:
     image: confluentinc/cp-kafka:7.5.0
@@ -382,7 +375,7 @@ services:
         condition: service_healthy
     networks:
       - bus-network
-    entrypoint: ["/bin/bash", "-c"]
+    entrypoint: [ "/bin/bash", "-c" ]
     command:
       - |
         echo 'Waiting for Kafka...'
@@ -401,3 +394,211 @@ services:
         echo 'Topics created!'
         kafka-topics --list --bootstrap-server kafka:29092
     restart: on-failure
+
+  # ============================================================
+  # AUTH SERVICE | Port 8081
+  # ============================================================
+  auth-service:
+    build:
+      context: ./auth-service
+      dockerfile: Dockerfile
+    container_name: auth-service
+    restart: unless-stopped
+    depends_on:
+      postgres-auth:
+        condition: service_healthy
+    networks:
+      - bus-network
+    ports:
+      - "8081:8081"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-auth:5432/auth_db
+      SPRING_DATASOURCE_USERNAME: auth_user
+      SPRING_DATASOURCE_PASSWORD: ${AUTH_DB_PASSWORD:-auth_pass_2024}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRATION: ${JWT_EXPIRATION:-3600000}
+      JWT_REFRESH_EXPIRATION: ${JWT_REFRESH_EXPIRATION:-604800000}
+
+  # ============================================================
+  # ROUTE SERVICE | Port 8082
+  # ============================================================
+  route-service:
+    build:
+      context: ./route-service
+      dockerfile: Dockerfile
+    container_name: route-service
+    restart: unless-stopped
+    depends_on:
+      postgres-route:
+        condition: service_healthy
+    networks:
+      - bus-network
+    ports:
+      - "8082:8082"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-route:5432/route_db
+      SPRING_DATASOURCE_USERNAME: route_user
+      SPRING_DATASOURCE_PASSWORD: ${ROUTE_DB_PASSWORD:-route_pass_2024}
+      JWT_SECRET: ${JWT_SECRET}
+
+  # ============================================================
+  # VEHICLE SERVICE | Port 8083
+  # ============================================================
+  vehicle-service:
+    build:
+      context: ./vehicle-service
+      dockerfile: Dockerfile
+    container_name: vehicle-service
+    restart: unless-stopped
+    depends_on:
+      postgres-vehicle:
+        condition: service_healthy
+    networks:
+      - bus-network
+    ports:
+      - "8083:8083"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-vehicle:5432/vehicle_db
+      SPRING_DATASOURCE_USERNAME: vehicle_user
+      SPRING_DATASOURCE_PASSWORD: ${VEHICLE_DB_PASSWORD:-vehicle_pass_2024}
+      JWT_SECRET: ${JWT_SECRET}
+
+  # ============================================================
+  # TRIP SERVICE | Port 8084
+  # ============================================================
+  trip-service:
+    build:
+      context: ./trip-service
+      dockerfile: Dockerfile
+    container_name: trip-service
+    restart: unless-stopped
+    depends_on:
+      postgres-trip:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - bus-network
+    ports:
+      - "8084:8084"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-trip:5432/trip_db
+      SPRING_DATASOURCE_USERNAME: trip_user
+      SPRING_DATASOURCE_PASSWORD: ${TRIP_DB_PASSWORD:-trip_pass_2024}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      JWT_SECRET: ${JWT_SECRET}
+
+  # ============================================================
+  # BOOKING SERVICE | Port 8085
+  # ============================================================
+  booking-service:
+    build:
+      context: ./booking-service
+      dockerfile: Dockerfile
+    container_name: booking-service
+    restart: unless-stopped
+    depends_on:
+      postgres-booking:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - bus-network
+    ports:
+      - "8085:8085"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-booking:5432/booking_db
+      SPRING_DATASOURCE_USERNAME: booking_user
+      SPRING_DATASOURCE_PASSWORD: ${BOOKING_DB_PASSWORD:-booking_pass_2024}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_secret_2024}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      JWT_SECRET: ${JWT_SECRET}
+
+  # ============================================================
+  # PAYMENT SERVICE | Port 8086
+  # ============================================================
+  payment-service:
+    build:
+      context: ./payment-service
+      dockerfile: Dockerfile
+    container_name: payment-service
+    restart: unless-stopped
+    depends_on:
+      postgres-payment:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - bus-network
+    ports:
+      - "8086:8086"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-payment:5432/payment_db
+      SPRING_DATASOURCE_USERNAME: payment_user
+      SPRING_DATASOURCE_PASSWORD: ${PAYMENT_DB_PASSWORD:-payment_pass_2024}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      JWT_SECRET: ${JWT_SECRET}
+
+  # ============================================================
+  # NOTIFICATION SERVICE | Port 8087
+  # ============================================================
+  notification-service:
+    build:
+      context: ./notification-service
+      dockerfile: Dockerfile
+    container_name: notification-service
+    restart: unless-stopped
+    depends_on:
+      postgres-notification:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - bus-network
+    ports:
+      - "8087:8087"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-notification:5432/notification_db
+      SPRING_DATASOURCE_USERNAME: notification_user
+      SPRING_DATASOURCE_PASSWORD: ${NOTIFICATION_DB_PASSWORD:-notif_pass_2024}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      JWT_SECRET: ${JWT_SECRET}
+
+  # ============================================================
+  # API GATEWAY | Port 8080 (entry point duy nhất cho client)
+  # ============================================================
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    container_name: api-gateway
+    restart: unless-stopped
+    depends_on:
+      - auth-service
+      - route-service
+      - vehicle-service
+      - trip-service
+      - booking-service
+      - payment-service
+      - notification-service
+      - redis
+    networks:
+      - bus-network
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_secret_2024}
+      JWT_SECRET: ${JWT_SECRET}
+      AUTH_SERVICE_URL: http://auth-service:8081
+      ROUTE_SERVICE_URL: http://route-service:8082
+      VEHICLE_SERVICE_URL: http://vehicle-service:8083
+      TRIP_SERVICE_URL: http://trip-service:8084
+      BOOKING_SERVICE_URL: http://booking-service:8085
+      PAYMENT_SERVICE_URL: http://payment-service:8086
+      NOTIFICATION_SERVICE_URL: http://notification-service:8087
