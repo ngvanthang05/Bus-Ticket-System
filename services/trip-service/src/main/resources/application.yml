@@ -1,0 +1,67 @@
+server:
+  port: 8084
+
+spring:
+  application:
+    name: trip-service
+
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5436}/${DB_NAME:trip_db}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:postgres}
+
+  jpa:
+    hibernate:
+      ddl-auto: validate   # bắt buộc theo quy ước - dùng Flyway quản lý schema
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    locations: classpath:db/migration
+
+  cloud:
+    openfeign:
+      client:
+        config:
+          default:
+            connectTimeout: 3000
+            readTimeout: 5000
+            loggerLevel: basic
+
+# JWT - PHẢI giống hệt secret của Auth Service và API Gateway
+jwt:
+  secret: ${JWT_SECRET}
+
+# Địa chỉ nội bộ gọi tới các service khác (docker network)
+services:
+  route-service:
+    url: ${ROUTE_SERVICE_URL:http://route-service:8082}
+  vehicle-service:
+    url: ${VEHICLE_SERVICE_URL:http://vehicle-service:8083}
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      routeService:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+      vehicleService:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+logging:
+  level:
+    com.xekhach.tripservice: DEBUG
+    feign: DEBUG

@@ -27,6 +27,8 @@ volumes:
   kafka_data:
   pgadmin_data:
   vehicle_db_data:
+  trip_db_data:
+  booking_pg_data:
 
 services:
 
@@ -488,6 +490,8 @@ services:
       SPRING_DATASOURCE_PASSWORD: ${TRIP_DB_PASSWORD:-trip_pass_2024}
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       JWT_SECRET: ${JWT_SECRET}
+      ROUTE_SERVICE_URL: http://route-service:8082
+      VEHICLE_SERVICE_URL: http://vehicle-service:8083
 
   # ============================================================
   # BOOKING SERVICE | Port 8085
@@ -618,5 +622,39 @@ services:
       - "5440:5432"
     volumes:
       - vehicle_db_data:/var/lib/postgresql/data
+    networks:
+      - bus-network
+
+  # ============================================================
+  # TRIP DATABASE (standalone, port 5441)
+  # ============================================================
+  trip-db:
+    image: postgres:17-alpine
+    container_name: trip-db
+    environment:
+      POSTGRES_DB: trip_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5441:5432"
+    volumes:
+      - trip_db_data:/var/lib/postgresql/data
+    networks:
+      - bus-network
+
+  # ============================================================
+  # BOOKING DATABASE (standalone, port 5442)
+  # ============================================================
+  booking-postgres:
+    image: postgres:17
+    container_name: booking-postgres
+    environment:
+      POSTGRES_DB: booking_service_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5442:5432"
+    volumes:
+      - booking_pg_data:/var/lib/postgresql/data
     networks:
       - bus-network
