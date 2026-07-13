@@ -26,6 +26,7 @@ volumes:
   zookeeper_log:
   kafka_data:
   pgadmin_data:
+  vehicle_db_data:
 
 services:
 
@@ -602,3 +603,20 @@ services:
       BOOKING_SERVICE_URL: http://booking-service:8085
       PAYMENT_SERVICE_URL: http://payment-service:8086
       NOTIFICATION_SERVICE_URL: http://notification-service:8087
+
+  # ============================================================
+  # VEHICLE DATABASE (standalone, port 5440)
+  # ============================================================
+  vehicle-db:
+    image: postgres:17-alpine
+    container_name: vehicle-db
+    environment:
+      POSTGRES_DB: vehicle_service_db
+      POSTGRES_USER: ${DB_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+    ports:
+      - "5440:5432"
+    volumes:
+      - vehicle_db_data:/var/lib/postgresql/data
+    networks:
+      - bus-network
